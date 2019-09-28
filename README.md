@@ -6,8 +6,8 @@ BlueBomb is an exploit for Broadcom's Bluetooth stack used in the Nintendo Wii.
 
 __You will need a Linux computer to do this!__
 Download the pre-built binaries from the releases page and follow these instructions.
-1. Download BlueZ from [here](http://www.bluez.org/download/) (you just need the user space package).
-2. Extract it and build it with `./configure --enable-deprecated && make`
+1. Download BlueZ from [here](http://www.bluez.org/download/), you just need the user space package.
+2. Extract it and build it with `./configure --enable-deprecated && make` (If you are using Ubuntu, you might need to install some needed packages with `sudo apt install libglib2.0-dev libdbus-1-dev libudev-dev libical-dev libreadline-dev` before this works.)
 3. Enter the `tools` directory and run `sudo systemctl disable --now bluetooth`
 4. Run `sudo ./btmgmt`
 5. Run the following commands in the managment prompt
