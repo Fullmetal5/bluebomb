@@ -1,0 +1,149 @@
+#!/usr/bin/python3
+''' stage0-ldsgen
+Given some DOL, attempt to find [most of the] suitable offsets necessary for 
+preparing a Bluebomb stage0 payload linkerscript.
+
+This relies on the assumption that, whatever DOL you're targeting has linked
+against the [same] bluetooth libraries, and in a way that is compatible with
+this particular strategy for resolving all of the addresses.
+
+Success is not guaranteed.
+'''
+
+import sys
+from struct import pack, unpack
+
+if (len(sys.argv) < 2):
+    print("usage: stage0-ldsgen <input .DOL file>")
+    exit(-1)
+else:
+    filename = sys.argv[1]
+
+MEM1_HEAD = 0x80000000
+MEM1_TAIL = 0x817fffff
+
+# Initialize segments
+hdr = { 'text': [], 'data': [] }
+for i in range(0,7): hdr['text'].append({'addr': None, 'size': None, 'off': None})
+for i in range(0,11): hdr['data'].append({'addr': None, 'size': None, 'off': None})
+
+# Read segments from DOL header
+with open(filename, "rb") as f:
+    for i in range(0,7):
+        hdr['text'][i]['off']  = unpack(">L", f.read(4))[0]
+    for i in range(0,11):
+        hdr['data'][i]['off']  = unpack(">L", f.read(4))[0]
+    for i in range(0,7):
+        hdr['text'][i]['addr'] = unpack(">L", f.read(4))[0]
+    for i in range(0,11):
+        hdr['data'][i]['addr'] = unpack(">L", f.read(4))[0]
+    for i in range(0,7):
+        hdr['text'][i]['size'] = unpack(">L", f.read(4))[0]
+    for i in range(0,11):
+        hdr['data'][i]['size'] = unpack(">L", f.read(4))[0]
+
+def off2addr(target_off, target=None):
+    """ Translate from offset in DOL to a virtual address """
+    if ((target_off < 0) or (target_off > len(dol_data))):
+        print("Invalid offset {:08x} for target {}".format(target_off, err))
+    for i in range(0,7):
+        size = hdr['text'][i]['size']
+        if (size != 0):
+            base_off = hdr['text'][i]['off']
+            tail = base_off + size
+            if ((target_off > base_off) and (target_off < tail)):
+                vaddr_base = hdr['data'][i]['addr']
+                target_vaddr = vaddr_base + (target_off - base_off)
+                return target_vaddr
+    for i in range(0,11):
+        size = hdr['data'][i]['size']
+        if (size != 0):
+            base_off = hdr['data'][i]['off']
+            tail = base_off + size
+            if ((target_off > base_off) and (target_off < tail)):
+                vaddr_base = hdr['data'][i]['addr']
+                target_vaddr = vaddr_base + (target_off - base_off)
+                return target_vaddr
+    return None
+
+def resolve_imm(hi_instr, lo_instr):
+    """ Given two instructions for loading a register with some address,
+    compute the target address; expects that 'hi_instr' encodes the high
+    16 bits (`lis`), and that 'lo_instr' encodes the low 16 bits, i.e.
+
+        xxxx8117 lis rN, 0x8117
+        yyyy25e0 lbz rM, 0x25e0(rN)
+
+    """
+    hibits = hi_instr & 0xffff
+    lobits = lo_instr & 0xffff
+    if (lobits & 0x8000):
+        return (hibits - 1) << 16 | lobits
+    else:
+        return hibits << 16 | lobits
+
+
+# -----------------------------------------------------------------------------
+
+# Last entry seems to be immediately before the beginning of a string table
+# whose first entry is 'L2CAP HOLD CONTINUE'
+switch_addr_bytes = b'\x4c\x32\x43\x41\x50\x20\x48\x4f\x4c\x44\x20\x43'
+
+switch_break_bytes = b'\x7d\xe3\x7b\x78\x7e\x24\x8b\x78' + \
+    b'\x7f\x25\xcb\x78\x38\xc0\x00\x02'
+
+# These the address of these two callbacks can be statically resolved in a
+# lot of different ways; perhaps add some different patterns later
+sdp_setlocaldirecord_bytes = b'\x48\x00\x03\x00\x88\x03\x00\x08' + \
+        b'\x28\x00\x00\x01\x40\x82\x00\x1c'
+l2c_csm_w4_l2cap_connect_rsp_bytes = b'\xb0\xbd\x00\x16\x38\xa0\x00\x1e' + \
+        b'\x90\x1d\x00\x04'
+
+# Read DOL contents into memory
+with open(filename, "rb") as f:
+    dol_data = f.read()
+
+# Resolve the address of the last `process_l2cap_cmd` jumptable entry
+switch_addr_off = dol_data.find(switch_addr_bytes)
+switch_addr_vaddr = off2addr(switch_addr_off, "switch_addr") - 0x04
+
+# Find the `bl l2cu_reject_connection` in `process_l2cap_cmd`s second case
+switch_break_off = dol_data.find(switch_break_bytes)
+switch_break_vaddr = off2addr(switch_break_off, "switch_break") + 0x10
+
+# Resolve the address of the required SDP callback
+sdp_cb_res_off = dol_data.find(sdp_setlocaldirecord_bytes)
+if ((sdp_cb_res_off > 0) and (sdp_cb_res_off < len(dol_data))):
+    sdp_cb_res_off = sdp_cb_res_off + 0x10
+    lis, addi = unpack(">LL", dol_data[sdp_cb_res_off:sdp_cb_res_off+0x08])
+    sdp_cb_vaddr = resolve_imm(lis, addi)
+    if ((sdp_cb_vaddr < MEM1_HEAD) or (sdp_cb_vaddr > MEM1_TAIL)):
+        sdp_cb_vaddr = None
+else:
+    sdp_cb_vaddr = None
+
+# Resolve the address of the required L2 callback
+l2_cb_res_off = dol_data.find(l2c_csm_w4_l2cap_connect_rsp_bytes)
+if ((l2_cb_res_off > 0) and (l2_cb_res_off < len(dol_data))):
+    l2_cb_res_off = l2_cb_res_off + 0x10
+    lis, lbz = unpack(">LL", dol_data[l2_cb_res_off:l2_cb_res_off+0x08])
+    l2_cb_vaddr = resolve_imm(lis, lbz)
+    if ((l2_cb_vaddr < MEM1_HEAD) or (l2_cb_vaddr > MEM1_TAIL)):
+        l2_cb_vaddr = None
+else:
+    l2_cb_vaddr = None
+
+
+# -----------------------------------------------------------------------------
+
+ADR = "0x{:08x}"
+sdp_cb = ADR.format(sdp_cb_vaddr) if sdp_cb_vaddr != None else "unknown"
+l2cb = ADR.format(l2_cb_vaddr) if l2_cb_vaddr != None else "unknown"
+switch_addr = ADR.format(switch_addr_vaddr) if switch_addr_vaddr != None else "unknown"
+switch_break = ADR.format(switch_break_vaddr) if switch_break_vaddr != None else "unknown"
+
+print("[!] sdp_cb\t\t = {}".format(sdp_cb))
+print("[!] l2cb\t\t = {}".format(l2cb))
+print("[!] switch_addr\t\t = {}".format(switch_addr))
+print("[!] switch_break\t = {}".format(switch_break))
+
