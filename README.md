@@ -58,3 +58,6 @@ The `switch_address` is slightly more complicated. Go to the `process_l2cap_cmd`
 Finally you need the `switch_break` address, this is address of the call to `l2cu_reject_connection` in case 2 of the switch statment from `process_l2cap_cmd`. There are two calls to it in case 2, you may use either one, simply get the address of the `bl l2cu_reject_connection` instruction and that is your `switch_break`.
 
 After placing all these values into the lds file you can also choose a `payload_addr`. This field is where the `stage1.bin` will be read into when the exploit runs, you __WILL__ have to adjust this to a memory region that isn't in use by your app when the exploit is running. If unsure you can try something like 512kb before the end of mem1 (0x81780000). Please note the addresse used in the System Menu lds files will not work for any other app, don't try to copy this address.
+
+# Support
+You can open an issue on this repo, or join the [Wii Mini Hacking Discord](https://discord.gg/MYm9kB7).
