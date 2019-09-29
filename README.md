@@ -32,7 +32,7 @@ Download the pre-built binaries from the releases page and follow these instruct
 8. Start you Wii and navigate to the app that you are exploiting, for the System Menu you only need to turn on the Wii, you can leave it sitting on the Health and Safety screen.
 9. __Turn OFF your wiimote at this point. DO NOT let anything else connect to the console via bluetooth.__
 10. Make sure you console is close to your bluetooth adapater. You may have to move it closer to get it in range; this will depend on your adapater.
-11. Click the SYNC button on your console. You may have to click is several times in a row before it sees the computer.
+11. Click the SYNC button on your console. You may have to click it several times in a row before it sees the computer.
     You will know it is connected when bluebomb prints "Got connection handle: #"
     Stop pushing the SYNC button and wait for bluebomb to run, what happens will depend on what `stage1.bin` you are using.
     The one from this repo will load `boot.elf` off the root of a FAT32 formatted USB drive and run it. You can use the HackMii Installer's boot.elf from [here](https://bootmii.org/download/) to get the Homebrew Channel.
