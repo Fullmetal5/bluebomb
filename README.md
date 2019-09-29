@@ -10,22 +10,26 @@ Download the pre-built binaries from the releases page and follow these instruct
 2. Extract it and run build it with `./configure --enable-deprecated && make` (If you are using Ubuntu, you might need to install some needed packages with `sudo apt install libglib2.0-dev libdbus-1-dev libudev-dev libical-dev libreadline-dev` before this works)
 3. Enter the `tools` directory and run `sudo systemctl disable --now bluetooth`
 4. Run `sudo ./btmgmt`
-5. Run the following commands in the managment prompt
-    `select 0`
-    `info`
+5. Run the following commands in the managment prompt:
+    ```
+    select 0
+    info
+    ```
     If you get an error about `Invalid index` then Linux can't find a Bluetooth device on your computer, if one real hardware make sure you have firmware for your bluetooth adapater, __if in a VM make sure you have passed through the device.__
     Assuming the above does not happen then you can continue.
-    `power on`
-    `connectable on`
-    `bondable on`
-    `discov on`
-    `info`
+    ```
+    power on
+    connectable on
+    bondable on
+    discov on
+    info
+    ```
     You should now look at the `info` results and check the `current settings` line for the following:
     `powered connectable discoverable bondable br/edr`
     If you don't have one of the above settings in your list, make sure you executed all the above commands.
     You can now `exit` out of the managment prompt.
 6. Run `sudo ./hciconfig hci0 iac liac`
-7. Run bluebomb with the arguments to the app-specific payload and the stage1 you would like to run.
+7. Run bluebomb with the arguments to the app-specific payload and the stage1 you would like to run (see the stage1 folder).
     Ex. `sudo ./bluebomb ./stage0/MINI_SM_NTSC.bin stage1.bin` for a NTSC Wii Mini's System Menu.
     You can also specify which hci device to use with bluebomb by adding before the `stage0` and `stage1` arguments.
     Ex. `sudo ./bluebomb 1 ./stage0/MINI_SM_NTSC.bin stage1.bin` to use HCI1.
