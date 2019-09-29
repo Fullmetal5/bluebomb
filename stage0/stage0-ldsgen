@@ -5,17 +5,31 @@ preparing a linkerscript for the Bluebomb stage0 payload.
 
 This relies on the assumption that, whatever DOL you're targeting has linked
 against the [same] Bluetooth libraries, and in a way that is compatible with
-this particular strategy for resolving all of the addresses.
+this particular strategy for resolving all of the addresses. It appears to be
+totally sufficient for targeting all System Menu binaries, although it's still
+possible that some other titles may require us to add additional patterns.
+
+payload_addr is not generalizable over all/most of possible space of inputs
+to this program, so we are probably condemned to asking the user for it.
 '''
 
 import sys
+import argparse
 from struct import pack, unpack
 
-if (len(sys.argv) < 2):
-    print("usage: stage0-ldsgen <input .DOL file>")
-    exit(-1)
-else:
-    filename = sys.argv[1]
+# Handle user input
+parser = argparse.ArgumentParser(description='''\
+Given some DOL, try to resolve all the parameters necessary for generating an
+application-specific Bluebomb stage0 linkerscript.''')
+parser.add_argument('input_dol', help="Input DOL file")
+parser.add_argument('-e', '--payload-addr', type=lambda x: int(x,0), default=0,
+    help="Application-specific address for the payload bytes")
+parser.add_argument('-t', '--template', default="stage0_default_template.lds",
+    help="Path to a linkerscript template file")
+parser.add_argument('-n', '--no-template', dest='no_template', action='store_true',
+    help="Skip rendering a template; write params to stdout")
+parser.set_defaults(no_template=False)
+args = parser.parse_args()
 
 # Initialize segments
 hdr = { 'text': [], 'data': [] }
@@ -23,7 +37,7 @@ for i in range(0,7): hdr['text'].append({'addr': None, 'size': None, 'off': None
 for i in range(0,11): hdr['data'].append({'addr': None, 'size': None, 'off': None})
 
 # Read segments from DOL header
-with open(filename, "rb") as f:
+with open(args.input_dol, "rb") as f:
     for i in range(0,7): hdr['text'][i]['off']  = unpack(">L", f.read(4))[0]
     for i in range(0,11): hdr['data'][i]['off']  = unpack(">L", f.read(4))[0]
     for i in range(0,7): hdr['text'][i]['addr'] = unpack(">L", f.read(4))[0]
@@ -32,8 +46,13 @@ with open(filename, "rb") as f:
     for i in range(0,11): hdr['data'][i]['size'] = unpack(">L", f.read(4))[0]
 
 # Read all DOL contents into memory
-with open(filename, "rb") as f:
+with open(args.input_dol, "rb") as f:
     dol_data = f.read()
+
+# Read template into memory
+if (args.no_template == False):
+    with open(args.template, "r") as f:
+        template = f.read()
 
 
 def off2addr(target_off, target=None):
@@ -119,7 +138,10 @@ l2cb_patterns = [
 
 
 # -----------------------------------------------------------------------------
-# Actually do the search
+# Actually do the search.
+#
+# It seems like [for system menus], (&sdp_cb - &l2cb == 0xc00).
+# Perhaps this is different with other types of binaries?
 
 # Resolve the address of the last `process_l2cap_cmd` jumptable entry
 switch_addr_vaddr = None
@@ -164,9 +186,14 @@ sdp_cb = ADR.format(sdp_cb_vaddr) if sdp_cb_vaddr != None else "unknown"
 l2cb = ADR.format(l2cb_vaddr) if l2cb_vaddr != None else "unknown"
 switch_addr = ADR.format(switch_addr_vaddr) if switch_addr_vaddr != None else "unknown"
 switch_break = ADR.format(switch_break_vaddr) if switch_break_vaddr != None else "unknown"
+payload_addr = ADR.format(args.payload_addr)
 
-print("[!] sdp_cb\t\t = {}".format(sdp_cb))
-print("[!] l2cb\t\t = {}".format(l2cb))
-print("[!] switch_addr\t\t = {}".format(switch_addr))
-print("[!] switch_break\t = {}".format(switch_break))
+if (args.no_template == False):
+    print(template.format(sdp_cb=sdp_cb, l2cb=l2cb, switch_addr=switch_addr, 
+        switch_break=switch_break, payload_addr=payload_addr))
+else:
+    print("[!] sdp_cb\t\t = {}".format(sdp_cb))
+    print("[!] l2cb\t\t = {}".format(l2cb))
+    print("[!] switch_addr\t\t = {}".format(switch_addr))
+    print("[!] switch_break\t = {}".format(switch_break))
 
