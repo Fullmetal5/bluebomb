@@ -24,7 +24,7 @@ application-specific Bluebomb stage0 linkerscript.''')
 parser.add_argument('input_dol', help="Input DOL file")
 parser.add_argument('-e', '--payload-addr', type=lambda x: int(x,0), default=0,
     help="Application-specific address for the payload bytes")
-parser.add_argument('-t', '--template', default="stage0_default_template.lds",
+parser.add_argument('-t', '--template', default="stage0_default_template.txt",
     help="Path to a linkerscript template file")
 parser.add_argument('-n', '--no-template', dest='no_template', action='store_true',
     help="Skip rendering a template; write params to stdout")
