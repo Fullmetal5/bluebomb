@@ -30,8 +30,8 @@ Download the pre-built binaries from the releases page and follow these instruct
     You can also specify which hci device to use with bluebomb by adding before the `stage0` and `stage1` arguments.
     Ex. `sudo ./bluebomb 1 ./stage0/MINI_SM_NTSC.bin stage1.bin` to use HCI1.
 8. Start you Wii and navigate to the app that you are exploiting, for the System Menu you only need to turn on the Wii, you can leave it sitting on the Health and Safety screen.
-9. __Turn OFF your wiimote at this point, do not let anything be connected to the console via bluetooth.__
-10. Make sure you console is close to your bluetooth adapater, you may have to move it closer to get it in range, this will depend on your adapater.
+9. __Turn OFF your Wiimote at this point, do not let anything be connected to the console via bluetooth.__
+10. Make sure you console is close to your bluetooth adapter, you may have to move it closer to get it in range, this will depend on your adapter.
 11. Click the SYNC button on your console, you may have to click is several times in a row before it sees the computer.
     You will know it is connected when bluebomb prints "Got connection handle: #"
     Stop pushing the SYNC button and wait for bluebomb to run, what happens will depend on what `stage1.bin` you are using.
