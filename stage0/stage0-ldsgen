@@ -64,7 +64,7 @@ def off2addr(target_off, target=None):
             base_off = hdr['text'][i]['off']
             tail = base_off + size
             if ((target_off > base_off) and (target_off < tail)):
-                vaddr_base = hdr['data'][i]['addr']
+                vaddr_base = hdr['text'][i]['addr']
                 target_vaddr = vaddr_base + (target_off - base_off)
                 return is_valid_vaddr(target_vaddr)
     for i in range(0,11):
