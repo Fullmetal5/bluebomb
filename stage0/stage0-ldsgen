@@ -1,0 +1,199 @@
+#!/usr/bin/python3
+''' stage0-ldsgen
+Given some DOL, attempt to find [most of the] suitable offsets necessary for 
+preparing a linkerscript for the Bluebomb stage0 payload.
+
+This relies on the assumption that, whatever DOL you're targeting has linked
+against the [same] Bluetooth libraries, and in a way that is compatible with
+this particular strategy for resolving all of the addresses. It appears to be
+totally sufficient for targeting all System Menu binaries, although it's still
+possible that some other titles may require us to add additional patterns.
+
+payload_addr is not generalizable over all/most of possible space of inputs
+to this program, so we are probably condemned to asking the user for it.
+'''
+
+import sys
+import argparse
+from struct import pack, unpack
+
+# Handle user input
+parser = argparse.ArgumentParser(description='''\
+Given some DOL, try to resolve all the parameters necessary for generating an
+application-specific Bluebomb stage0 linkerscript.''')
+parser.add_argument('input_dol', help="Input DOL file")
+parser.add_argument('-e', '--payload-addr', type=lambda x: int(x,0), default=0x81780000, # Default to 512K before the end of mem1
+    help="Application-specific address for the payload bytes")
+parser.add_argument('-t', '--template', default="stage0_default_template.txt",
+    help="Path to a linkerscript template file")
+parser.add_argument('-n', '--no-template', dest='no_template', action='store_true',
+    help="Skip rendering a template; write params to stdout")
+parser.set_defaults(no_template=False)
+args = parser.parse_args()
+
+# Initialize segments
+hdr = { 'text': [], 'data': [] }
+for i in range(0,7): hdr['text'].append({'addr': None, 'size': None, 'off': None})
+for i in range(0,11): hdr['data'].append({'addr': None, 'size': None, 'off': None})
+
+# Read segments from DOL header
+with open(args.input_dol, "rb") as f:
+    for i in range(0,7): hdr['text'][i]['off']  = unpack(">L", f.read(4))[0]
+    for i in range(0,11): hdr['data'][i]['off']  = unpack(">L", f.read(4))[0]
+    for i in range(0,7): hdr['text'][i]['addr'] = unpack(">L", f.read(4))[0]
+    for i in range(0,11): hdr['data'][i]['addr'] = unpack(">L", f.read(4))[0]
+    for i in range(0,7): hdr['text'][i]['size'] = unpack(">L", f.read(4))[0]
+    for i in range(0,11): hdr['data'][i]['size'] = unpack(">L", f.read(4))[0]
+
+# Read all DOL contents into memory
+with open(args.input_dol, "rb") as f:
+    dol_data = f.read()
+
+# Read template into memory
+if (args.no_template == False):
+    with open(args.template, "r") as f:
+        template = f.read()
+
+
+def off2addr(target_off, target=None):
+    """ Translate from offset in DOL to a virtual address """
+    if (not is_valid_offset(target_off)): return None
+    for i in range(0,7):
+        size = hdr['text'][i]['size']
+        if (size != 0):
+            base_off = hdr['text'][i]['off']
+            tail = base_off + size
+            if ((target_off > base_off) and (target_off < tail)):
+                vaddr_base = hdr['text'][i]['addr']
+                target_vaddr = vaddr_base + (target_off - base_off)
+                return is_valid_vaddr(target_vaddr)
+    for i in range(0,11):
+        size = hdr['data'][i]['size']
+        if (size != 0):
+            base_off = hdr['data'][i]['off']
+            tail = base_off + size
+            if ((target_off > base_off) and (target_off < tail)):
+                vaddr_base = hdr['data'][i]['addr']
+                target_vaddr = vaddr_base + (target_off - base_off)
+                return is_valid_vaddr(target_vaddr)
+    return None
+
+def resolve_imm(hi_instr, lo_instr):
+    """ Given two instructions for loading a register with some address,
+    compute the target address; expects that 'hi_instr' encodes the high
+    16 bits (`lis`), and that 'lo_instr' encodes the low 16 bits, i.e.
+
+        xxxx8117 lis rN, 0x8117
+        yyyy25e0 lbz rM, 0x25e0(rN)
+
+    """
+    hibits = hi_instr & 0xffff
+    lobits = lo_instr & 0xffff
+    if (lobits & 0x8000):
+        return (hibits - 1) << 16 | lobits
+    else:
+        return hibits << 16 | lobits
+
+def is_valid_offset(offset):
+    """ Returns 'offset' if it's valid, otherwise return None """
+    if ((offset >= 0) and (offset < len(dol_data))): return offset
+    else: return None
+
+def is_valid_vaddr(vaddr):
+    """ Returns 'vaddr' if it's valid, otherwise return None """
+    if ((vaddr >= 0x80000000) and (vaddr < 0x81800000)): return vaddr
+    else: return None
+
+
+# -----------------------------------------------------------------------------
+# Add patterns in here, of the form:
+#
+#   { 'pat': <bytestring>, 'off': <offset to target> }
+#
+
+switch_addr_patterns = [
+    {
+        'pat': b'\x4c\x32\x43\x41\x50\x20\x48\x4f\x4c\x44\x20\x43', 
+        'off': -0x4
+    },
+]
+switch_break_patterns = [
+    {
+        'pat': b'\x7d\xe3\x7b\x78\x7e\x24\x8b\x78\x7f\x25\xcb\x78\x38\xc0\x00\x02',
+        'off': 0x10 
+    },
+]
+sdp_cb_patterns = [
+    {
+        'pat': b'\x48\x00\x03\x00\x88\x03\x00\x08\x28\x00\x00\x01\x40\x82\x00\x1c',
+        'off': 0x10
+    }
+]
+l2cb_patterns = [
+    { 
+        'pat': b'\xb0\xbd\x00\x16\x38\xa0\x00\x1e\x90\x1d\x00\x04', 
+        'off': 0x10 
+    },
+]
+
+
+# -----------------------------------------------------------------------------
+# Actually do the search.
+#
+# It seems like [for system menus], (&sdp_cb - &l2cb == 0xc00).
+# Perhaps this is different with other types of binaries?
+
+# Resolve the address of the last `process_l2cap_cmd` jumptable entry
+switch_addr_vaddr = None
+for x in switch_addr_patterns:
+    off = dol_data.find(x['pat'])
+    switch_addr_vaddr = off2addr(off, "switch_addr") + x['off']
+    if (switch_addr_vaddr != None): break
+
+# Find the `bl l2cu_reject_connection` in `process_l2cap_cmd`s second case
+switch_break_vaddr = None
+for x in switch_break_patterns:
+    off = dol_data.find(x['pat'])
+    switch_break_vaddr = off2addr(off, "switch_break") + x['off']
+    if (switch_break_vaddr != None): break
+
+# Resolve the address of the required SDP callback byte
+sdp_cb_vaddr = None
+for x in sdp_cb_patterns:
+    off = dol_data.find(x['pat'])
+    if (is_valid_offset(off)):
+        off = off + x['off']
+        lis, addi = unpack(">LL", dol_data[off:off+0x08])
+        sdp_cb_vaddr = resolve_imm(lis, addi)
+        if (is_valid_vaddr(sdp_cb_vaddr)): break
+
+# Resolve the address of the required L2 callback byte
+l2cb_vaddr = None
+for x in l2cb_patterns:
+    off = dol_data.find(x['pat'])
+    if (is_valid_offset(off)):
+        off = off + x['off']
+        lis, lbz = unpack(">LL", dol_data[off:off+0x08])
+        l2cb_vaddr = resolve_imm(lis, lbz)
+        if(is_valid_vaddr(l2cb_vaddr)): break
+
+
+# -----------------------------------------------------------------------------
+# Emit results on stdout
+
+ADR = "0x{:08x}"
+sdp_cb = ADR.format(sdp_cb_vaddr) if sdp_cb_vaddr != None else "unknown"
+l2cb = ADR.format(l2cb_vaddr) if l2cb_vaddr != None else "unknown"
+switch_addr = ADR.format(switch_addr_vaddr) if switch_addr_vaddr != None else "unknown"
+switch_break = ADR.format(switch_break_vaddr) if switch_break_vaddr != None else "unknown"
+payload_addr = ADR.format(args.payload_addr)
+
+if (args.no_template == False):
+    print(template.format(sdp_cb=sdp_cb, l2cb=l2cb, switch_addr=switch_addr, 
+        switch_break=switch_break, payload_addr=payload_addr))
+else:
+    print("[!] sdp_cb\t\t = {}".format(sdp_cb))
+    print("[!] l2cb\t\t = {}".format(l2cb))
+    print("[!] switch_addr\t\t = {}".format(switch_addr))
+    print("[!] switch_break\t = {}".format(switch_break))
+
