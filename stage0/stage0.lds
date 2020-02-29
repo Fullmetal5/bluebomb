@@ -1,4 +1,4 @@
-/*  Copyright 2019  Dexter Gerig  <dexgerig@gmail.com>
+/*  Copyright 2020  Dexter Gerig  <dexgerig@gmail.com>
     
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -20,23 +20,10 @@ OUTPUT_ARCH(powerpc:common)
 ENTRY(_start)
 
 SECTIONS {
-	/* Adjust app specific settings here. */
-	sdp_cb = 0x811729e0;
-	l2cb = 0x81171de0;
-	switch_addr = 0x8168c4d8;
-	switch_break = 0x815abe58;
-	payload_addr = 0x80004000;
+	. = 0x80001800;
+	dest = .;
 	
-	. = (0x80001800 - 0xc);
-	dest = (. + 0xc);
-	.app_settings : {
-		LONG(sdp_cb)
-		LONG(l2cb)
-		LONG(switch_addr)
-	}
-
 	.start : {
 		stage0.o(*)
 	}
 }
-

