@@ -1,3 +1,2 @@
 stage0/*.o
 stage0/*.elf
-stage0/*.bin
