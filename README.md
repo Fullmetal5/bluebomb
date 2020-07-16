@@ -7,10 +7,10 @@ BlueBomb is an exploit for Broadcom's Bluetooth stack used in the Nintendo Wii.
 __You will need a Linux computer to do this!__
 Download the pre-built binaries from the releases page and follow these instructions.
 1. Disable your bluetooth service by running `sudo systemctl disable --now bluetooth`
-2. Run bluebomb with the arguments to the app-specific payload and the stage1 you would like to run.
-    Ex. `sudo ./bluebomb ./stage0/MINI_SM_NTSC.bin stage1.bin` for a NTSC Wii Mini's System Menu.
+2. Run the correct bluebomb for your system architecture with the arguments to the app-specific payload and the stage1 you would like to run.
+    Ex. `sudo ./bluebomb-x64 ./stage0/MINI_SM_NTSC.bin stage1.bin` for Bluebomb running on a 64-bit system exploiting an NTSC Wii Mini's System Menu.
     You can also specify which hci device to use with bluebomb by adding before the `stage0` and `stage1` arguments.
-    Ex. `sudo ./bluebomb 1 ./stage0/MINI_SM_NTSC.bin stage1.bin` to use HCI1.
+    Ex. `sudo ./bluebomb-x64 1 ./stage0/MINI_SM_NTSC.bin stage1.bin` to use HCI1.
 3. Start your Wii and navigate to the app that you are exploiting, for the System Menu you only need to turn on the Wii, you can leave it sitting on the Health and Safety screen.
 4. __Turn OFF your wiimote at this point. DO NOT let anything else connect to the console via bluetooth.__
 5. Make sure you console is close to your bluetooth adapter, you may have to move it closer to get it in range, this will depend on your adapter.
