@@ -15,6 +15,7 @@ to this program, so we are probably condemned to asking the user for it.
 
 import sys
 import argparse
+import os
 from struct import pack, unpack
 
 # Handle user input
@@ -22,6 +23,7 @@ parser = argparse.ArgumentParser(description='''\
 Given some DOL, try to resolve all the parameters necessary for generating an
 application-specific Bluebomb stage0 linkerscript.''')
 parser.add_argument('input_dol', help="Input DOL file")
+parser.add_argument('-o', '--output_l2cb', nargs='?', const="", help="Save l2cb to file. Filename will be generated from 'input filename without extension + .bin' if not provided")
 parser.add_argument('-e', '--payload-addr', type=lambda x: int(x,0), default=0x81780000, # Default to 512K before the end of mem1
     help="Application-specific address for the payload bytes")
 parser.add_argument('-t', '--template', default="stage0_default_template.txt",
@@ -197,3 +199,10 @@ else:
     print("[!] switch_addr\t\t = {}".format(switch_addr))
     print("[!] switch_break\t = {}".format(switch_break))
 
+if (args.output_l2cb is not None and l2cb_vaddr):
+    outfile = args.output_l2cb
+    if (outfile == ""):
+        outfile = os.path.splitext(args.input_dol)[0] + ".bin"
+    print("Writing to {}".format(outfile))
+    with open(outfile, "wb") as fo:
+        fo.write(l2cb_vaddr.to_bytes(4,"big"))
